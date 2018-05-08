@@ -15,35 +15,38 @@ from torchvision import datasets, models, transforms
 
 def main():
   args = get_arguments()
+  dataloaders, dataset_sizes, data_transforms, image_datasets = get_data(args.data_directory)
   if not os.path.exists(args.save_dir):
-        os.makedirs(args.save_dir)
+    os.makedirs(args.save_dir)
   save_dir = os.path.join(args.save_dir, 'checkpoint.pth')
-  
 
-  if args.arch == "vgg19":
-    model = models.vgg19(pretrained = True)
-    classifier = nn.Sequential(OrderedDict([
+  if os.path.exists(save_dir):
+      model = load_checkpoint(save_dir, args.arch)
+      classifier = model.classifier
+  else:
+    if args.arch == "vgg19":
+        model = models.vgg19(pretrained = True)
+        classifier = nn.Sequential(OrderedDict([
                                 ('0', nn.Linear(25088, int(args.hidden_units))),
                                 ('1', nn.ReLU()),
                                 ('2', nn.Dropout(0.5)),
                                 ('3', nn.Linear(int(args.hidden_units), 102)),
                                 ('output', nn.LogSoftmax(dim=1))]))
-  elif args.arch == "densenet121":
-    model = models.densenet121(pretrained=True)
-    classifier = nn.Sequential(OrderedDict([
-        ('0', nn.Linear(1024, int(args.hidden_units))),
-        ('1', nn.ReLU()),
-        ('2', nn.Dropout(0.5)),
-        ('3', nn.Linear(int(args.hidden_units), 102)),
-        ('output', nn.LogSoftmax(dim=1))
-    ]))
+    elif args.arch == "densenet121":
+        model = models.densenet121(pretrained=True)
+        classifier = nn.Sequential(OrderedDict([
+            ('0', nn.Linear(1024, int(args.hidden_units))),
+            ('1', nn.ReLU()),
+            ('2', nn.Dropout(0.5)),
+            ('3', nn.Linear(int(args.hidden_units), 102)),
+            ('output', nn.LogSoftmax(dim=1))]))
 
-  for param in model.parameters():
-      param.requires_grad = False
-  
-  model.classifier = classifier
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    model.classifier = classifier
 
-  dataloaders, dataset_sizes, data_transforms, image_datasets = get_data(args.data_directory)
+
   
   if args.gpu_av:
     model = model.cuda()
@@ -54,7 +57,7 @@ def main():
   model = train_model(model, criterion, optimizer, dataloaders, 
                       dataset_sizes, num_epochs=int(args.epochs), gpu_av=args.gpu_av)
   
-  test_model(model, criterion, dataloaders['test'], dataset_sizes['test'], args.gpu_av)
+  test_model(model, dataloaders['test'], dataset_sizes['test'], criterion, args.gpu_av)
   checkpoint = {'classifier_input_size': 25088,
               'output_size': 102,
               'optimizer_state' : optimizer.state_dict(),
@@ -64,8 +67,10 @@ def main():
              'data_transforms' : data_transforms['test'],
              'class_to_idx' : image_datasets['train'].class_to_idx
              }
-  
+
   torch.save(checkpoint, save_dir)
+  
+  
 
 def get_arguments():
   parser = argparse.ArgumentParser()
@@ -74,7 +79,7 @@ def get_arguments():
   parser.add_argument("--arch", action="store", dest="arch", default="vgg19" , help = "Set architechture('vgg19' or 'densenet121')")
   parser.add_argument("--learning_rate", action="store", dest="lr", default=0.01 , help = "Set learning rate")
   parser.add_argument("--hidden_units", action="store", dest="hidden_units", default=512 , help = "Set number of hidden units")
-  parser.add_argument("--epochs", action="store", dest="epochs", default=3 , help = "Set number of epochs")
+  parser.add_argument("--epochs", action="store", dest="epochs", default=5 , help = "Set number of epochs")
   parser.add_argument("--gpu", action="store_true", dest="gpu_av", default=False , help = "Wanna use GPU?")
   parser.add_argument('data_directory', action="store")
   
@@ -108,12 +113,12 @@ def get_data(data_dir):
   }
   
   image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x), transform = data_transforms[x]) for x in ['train', 'valid', 'test']}
-  dataloaders    = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=64, shuffle=True) for x in ['train', 'valid', 'test']}
+  dataloaders    = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=16, shuffle=True) for x in ['train', 'valid', 'test']}
   dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'valid', 'test']}
 
   return dataloaders, dataset_sizes, data_transforms, image_datasets
 
-def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epochs=3, gpu_av=False):
+def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epochs=5, gpu_av=False):
   change_to = torch.FloatTensor
   if gpu_av:
     change_to = torch.cuda.FloatTensor
@@ -153,6 +158,8 @@ def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epo
           # forward
           # track history if only in train
           if phase == 'train':
+              curr = time.time() - start
+              #print('\n {:.0f}m {:.0f}s'.format(curr // 60, curr % 60))
               inputs, labels = Variable(inputs), Variable(labels)
               outputs = model.forward(inputs)
               ps = torch.exp(outputs).data
@@ -160,10 +167,11 @@ def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epo
               loss.backward()
               optimizer.step()
           elif phase == 'valid':
-              inputs, labels = Variable(inputs, volatile=True), Variable(labels, volatile=True)
-              outputs = model.forward(inputs)
-              ps = torch.exp(outputs).data
-              loss = criterion(outputs, labels)
+              inputs, labels = Variable(inputs, requires_grad=False), Variable(labels, requires_grad=False)
+              with torch.no_grad():
+                outputs = model.forward(inputs)
+                ps = torch.exp(outputs).data
+                loss = criterion(outputs, labels)
 
           # statistics
           equals = (labels.data == ps.max(1)[1])
@@ -172,7 +180,7 @@ def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epo
 
         epoch_loss = running_loss / dataset_sizes[phase]
         epoch_acc = running_corrects / dataset_sizes[phase]     
-        epoch_loss = epoch_loss.data.cpu().numpy()[0]          
+        epoch_loss = epoch_loss.data.cpu().numpy()         
 
         print('{} Loss: {:.4f} Acc: {:.4f}'.format(
             phase, epoch_loss, epoch_acc))
@@ -184,7 +192,7 @@ def train_model(model, criterion, optimizer, dataloaders, dataset_sizes, num_epo
 
   return model
 
-def test_model(model, criterion, test_data, data_size, gpu_av):
+def test_model(model, test_data, data_size, criterion, gpu_av):
     model = model.eval()
     running_loss = 0.0
     running_corrects = 0
@@ -192,23 +200,28 @@ def test_model(model, criterion, test_data, data_size, gpu_av):
         if gpu_av:
             inputs = inputs.cuda()
             labels = labels.cuda()
-        inputs, labels = Variable(inputs, volatile=True), Variable(labels, volatile=True)
-        outputs = model.forward(inputs)
-        ps = torch.exp(outputs).data
-        equals = (labels.data == ps.max(1)[1])
-        loss = criterion(outputs, labels)
+        inputs, labels = Variable(inputs, requires_grad=False), Variable(labels, requires_grad=False)
+        with torch.no_grad():
+            outputs = model.forward(inputs)
+            ps = torch.exp(outputs).data
+            equals = (labels.data == ps.max(1)[1])
+            loss = criterion(outputs, labels)
         running_loss += loss * inputs.size(0)
         running_corrects += equals.type_as(torch.FloatTensor()).sum()
 
     test_loss = running_loss / data_size
-    test_loss = test_loss.data.cpu().numpy()[0]    
+    test_loss = test_loss.data.cpu().numpy()
     test_acc = running_corrects / data_size
 
     print('\n\n{} Loss: {:.4f} Acc: {:.4f}'.format('Test', test_loss, test_acc))
 
-def load_checkpoint(filepath):
+def load_checkpoint(filepath, arch):
     checkpoint = torch.load(filepath)
-    model = models.vgg19(pretrained=True)
+    if arch == "vgg19":
+        model = models.vgg19(pretrained=True)
+    elif arch == "densenet121":
+        model = models.densenet121(pretrained=True)
+
     for param in model.parameters():
         param.requires_grad = False
     model.classifier = checkpoint['classifier']
