@@ -103,11 +103,12 @@ def predict(image_path, model, gpu_av, topk=5):
         img = process_image(im)
     
     img = img.type(torch.cuda.FloatTensor)
-    img = Variable(img.unsqueeze(0), volatile=True)
-    if gpu_av:
-        img = img.cuda()
-    output = model.forward(img)
-    ps = torch.exp(output)
+    with torch.no_grad():
+        img = Variable(img.unsqueeze(0), requires_grad=False)
+        if gpu_av:
+            img = img.cuda()
+        output = model.forward(img)
+        ps = torch.exp(output)
     probs, indeces = ps.topk(topk)
     return probs.data[0].cpu().numpy(), indeces.data[0].cpu().numpy()
 

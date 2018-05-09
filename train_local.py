@@ -26,6 +26,7 @@ def main():
   else:
     if args.arch == "vgg19":
         model = models.vgg19(pretrained = True)
+        in_size = 25088
         classifier = nn.Sequential(OrderedDict([
                                 ('0', nn.Linear(25088, int(args.hidden_units))),
                                 ('1', nn.ReLU()),
@@ -34,6 +35,7 @@ def main():
                                 ('output', nn.LogSoftmax(dim=1))]))
     elif args.arch == "densenet121":
         model = models.densenet121(pretrained=True)
+        in_size = 1024
         classifier = nn.Sequential(OrderedDict([
             ('0', nn.Linear(1024, int(args.hidden_units))),
             ('1', nn.ReLU()),
@@ -58,14 +60,14 @@ def main():
                       dataset_sizes, num_epochs=int(args.epochs), gpu_av=args.gpu_av)
   
   test_model(model, dataloaders['test'], dataset_sizes['test'], criterion, args.gpu_av)
-  checkpoint = {'classifier_input_size': 25088,
+  checkpoint = {'classifier_input_size': in_size,
               'output_size': 102,
               'optimizer_state' : optimizer.state_dict(),
-              'epochs' : 5,
               'classifier' : classifier,
               'state_dict': model.state_dict(),
              'data_transforms' : data_transforms['test'],
-             'class_to_idx' : image_datasets['train'].class_to_idx
+             'class_to_idx' : image_datasets['test'].class_to_idx,
+             'arch' : args.arch
              }
 
   torch.save(checkpoint, save_dir)
@@ -230,12 +232,14 @@ def load_checkpoint(filepath, arch):
     for x in model.features:
         if type(x) == nn.modules.conv.Conv2d:
             x.weight.data = x.weight.data.type(torch.DoubleTensor)
-            x.bias.data = x.bias.data.type(torch.DoubleTensor)
+            if x.bias is not None:
+                x.bias.data = x.bias.data.type(torch.DoubleTensor)
 
     for x in model.classifier:
         if type(x) == nn.modules.linear.Linear:
             x.weight.data = x.weight.data.type(torch.DoubleTensor)
-            x.bias.data = x.bias.data.type(torch.DoubleTensor) 
+            if x.bias is not None:
+                x.bias.data = x.bias.data.type(torch.DoubleTensor) 
 
     
     return model
